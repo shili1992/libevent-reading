@@ -61,6 +61,7 @@ struct evepoll {
     struct event* evwrite;
 };
 
+//epoll相关的上下文
 struct epollop {
     // 对应的event管理，通过fds[sock_fd]得到与socket关联的evepoll
     struct evepoll* fds;
@@ -68,9 +69,9 @@ struct epollop {
     int nfds;
 
     // epoll相关
-    struct epoll_event* events;
+    struct epoll_event* events;  //epoll event的数组
     int nevents;
-    int epfd /*epoll_create(32000)*/;
+    int epfd /*epoll_create(32000)， epoll的fd*/;
 };
 
 static void* epoll_init    (struct event_base*);

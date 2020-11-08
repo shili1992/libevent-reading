@@ -230,11 +230,12 @@ struct event {
     // 事件队列 链接到event_base.eventqueue
     TAILQ_ENTRY (event) ev_next;
     // active队列 链接到event_base.activequeues
+    //libevent将所有的激活事件放入到链表active list中，然后遍历active list执行调度，ev_active_next就指明了event在event_base.active list中的位置
     TAILQ_ENTRY (event) ev_active_next; //active list
     // 信号队列 链接到event_base.sig.evsigevents
-    TAILQ_ENTRY (event) ev_signal_next; //singnal list
+    TAILQ_ENTRY (event) ev_signal_next; //signal list
     // 最小堆下标 存储在event_base.timeheap
-    unsigned int min_heap_idx;  /* for managing timeouts*/
+    unsigned int min_heap_idx;  /*，如果是timeout事件，它们是event在小根堆中的索引和超时值， 这个是小根堆中的idx*/
 
     //指向所属的事件循环event_base
     struct event_base* ev_base;
@@ -243,7 +244,7 @@ struct event {
     int ev_fd;
     //监听的类型
     short ev_events;
-    //加入active队列之后要被调用的次数
+    //加入active队列之后要被调用的次数,  事件就绪执行时，调用ev_callback的次数，通常为1
     short ev_ncalls;
     //通过该变量可以在调用过程中删除，因为
     // 有些event会在回调函数中删除自己，使用
@@ -258,7 +259,7 @@ struct event {
 
     //指定的回调函数与参数
     void (*ev_callback)(int, short, void* arg);
-    void* ev_arg;
+    void* ev_arg;  //可以是任意类型的数据，在设置event时指定
     
     // 在活动队列被回调的时候，该变量说明发生了什么事件，event result的简称
     int ev_res;     /* result passed to event callback */

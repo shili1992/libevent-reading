@@ -37,19 +37,20 @@ extern "C" {
 
 struct eventop {
     const char* name;
-    void* (*init)(struct event_base*);
-    int (*add)(void*, struct event*);
-    int (*del)(void*, struct event*);
-    int (*dispatch)(struct event_base*, void*, struct timeval*);
-    void (*dealloc)(struct event_base*, void*);
+    void* (*init)(struct event_base*); // 初始化
+    int (*add)(void*, struct event*);  // 注册事件
+    int (*del)(void*, struct event*);  // 删除事件
+    int (*dispatch)(struct event_base*, void*, struct timeval*); // 事件分发
+    void (*dealloc)(struct event_base*, void*); // 注销，释放资源
     /* set if we need to reinitialize the event base */
     int need_reinit;
 };
 
 struct event_base {
-    // 与操作系统相关的io多路复用模型
+    // 与操作系统相关的io多路复用模型（比如epoll）, 每种I/O demultiplex机制的实现都必须提供这五个函数接口，来完成自身的初始化、销毁释放；对事件的注册、注销和分发。
     const struct eventop* evsel;
-    //调用i/o模型evsel->init返回的变量，相当于io多路复用模型上线文，之后调用与evsel相关的io模型函数都会将该变量传入
+    //io多路复用模型上线文（比如epollop），
+    // 调用i/o模型evsel->init返回的变量，之后调用与evsel相关的io模型函数都会将该变量传入
     void* evbase;
     //当前注册的事件event总数
     int event_count;        /* counts number of total events */
@@ -59,7 +60,8 @@ struct event_base {
     int event_gotterm;      /* Set to terminate loop 正常退出dispatch*/
     int event_break;        /* Set to terminate loop immediately 马上退出dispatch*/
 
-    /* active event management */
+    // activequeues是一个二级指针，前面讲过libevent支持事件优先级，因此你可以把它看作是数组，
+    // 其中的元素activequeues[priority]是一个链表，链表的每个节点指向一个优先级为priority的就绪事件event
     //1. active list active队里，事件已经触发等待回调通知
     // - 注册一个2s计时器，2s过后该event会被放到active队列等待回调
     // - 注册一个socket读事件,当socket可读会将socket读事件放到active队列等待回调
@@ -72,10 +74,11 @@ struct event_base {
     /* signal handling info */
     struct evsignal_info sig; //信号相关
 
+    //eventqueue，链表，保存了所有的注册事件event的指针
     struct event_list eventqueue; //添加到事件循环中的所有event
     struct timeval event_tv;
 
-    struct min_heap timeheap; //最小二叉堆用于处理计时器
+    struct min_heap timeheap; //管理定时事件的小根堆, 最小二叉堆用于处理计时器
 
     struct timeval tv_cache;
 };

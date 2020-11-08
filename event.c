@@ -67,6 +67,16 @@ extern const struct eventop pollops;
 #endif
 #ifdef HAVE_EPOLL
 extern const struct eventop epollops;
+// epoll epollops 对应是下面的数据结构
+//const struct eventop epollops = {
+//    "epoll",
+//    epoll_init,
+//    epoll_add,
+//    epoll_del,
+//    epoll_dispatch,
+//    epoll_dealloc,
+//    1 /* need reinit */
+//};
 #endif
 #ifdef HAVE_WORKING_KQUEUE
 extern const struct eventop kqops;
@@ -180,6 +190,7 @@ event_base_new(void)
     int i;
     struct event_base* base;
 
+    // 为event_base实例申请空间
     if ((base = calloc(1, sizeof(struct event_base))) == NULL)
         event_err(1, "%s: calloc", __func__);
 
@@ -189,12 +200,14 @@ event_base_new(void)
     detect_monotonic();
     gettime(base, &base->event_tv);
 
+    //初始化timer mini-heap
     min_heap_ctor(&base->timeheap);
+
     TAILQ_INIT(&base->eventqueue);
     base->sig.ev_signal_pair[0] = -1;
     base->sig.ev_signal_pair[1] = -1;
 
-    // 选一个最合适的多路复用系统api
+    // 选择并初始化合适的系统I/O 的demultiplexer机制
     base->evbase = NULL;
     for (i = 0; eventops[i] && !base->evbase; i++) {
         base->evsel = eventops[i];
@@ -376,7 +389,11 @@ event_haveevents(struct event_base* base)
  * process before higher priorities.  Low priority events can starve high
  * priority ones.
  */
-// 处理所有活动队列里的事件，对每个事件调用回调函数
+
+ // 调用event_process_active()处理激活链表中的就绪event，调用其回调函数执行事件处理
+// 该函数会寻找最高优先级（priority值越小优先级越高）的激活事件链表，
+// 然后处理链表中的所有就绪事件；
+// 因此低优先级的就绪事件可能得不到及时处理
 static void
 event_process_active(struct event_base* base)
 {
@@ -385,7 +402,7 @@ event_process_active(struct event_base* base)
     int i;
     short ncalls;
     //取得数组nactivequeues最靠前的一个非NULL元素
-    //即优先级最大的一个活动队列
+    //即优先级最大的一个活动队列, 一次只處理一個隊列
     for (i = 0; i < base->nactivequeues; ++i) {
         if (TAILQ_FIRST(base->activequeues[i]) != NULL) {
             activeq = base->activequeues[i];
@@ -401,7 +418,7 @@ event_process_active(struct event_base* base)
         if (ev->ev_events & EV_PERSIST)
             event_queue_remove(base, ev, EVLIST_ACTIVE);
         else
-            event_del(ev);
+            event_del(ev); //从active队列中删除, 所以for循环可以一直从head拿下一个element
 
         /* Allows deletes to work */
         // 回调过程中，允许event的回调删除删除自己
@@ -508,13 +525,15 @@ event_base_loop(struct event_base* base, int flags)
     if (base->sig.ev_signal_added)
         evsignal_base = base;
     done = 0;
-    while (!done) {
+    while (!done) { // 事件主循环
         /* Terminate the loop if we have been asked to */
+        // 查看是否需要跳出循环，程序可以调用event_loopexit_cb()设置event_gotterm标记
         if (base->event_gotterm) {
             base->event_gotterm = 0;
             break;
         }
 
+        // 查看是否需要跳出循环, 调用event_base_loopbreak()设置event_break标记
         if (base->event_break) {
             base->event_break = 0;
             break;
@@ -532,12 +551,16 @@ event_base_loop(struct event_base* base, int flags)
             }
         }
 
+         // 校正系统时间，如果系统使用的是非MONOTONIC时间，用户可能会向后调整了系统时间
+         // 在timeout_correct函数里，比较last wait time和当前时间，如果当前时间< last wait time
+         // 表明时间有问题，这是需要更新timer_heap中所有定时事件的超时时间。
         timeout_correct(base, &tv);
 
         tv_p = &tv; // evsel->dispatch阻塞超时时间
         // 有活动事件或者设置事件循环为非阻塞模式EV_LOOP_NOBLOCK，不会计算最近计时器触发时间
         // 阻塞调用evsel->dispatch，如果并发量比较大或者事件较多的情况下可以设置为非阻塞模式，
         // 否则可能会浪费cpu使用率
+        //根据timer heap中事件的最小超时时间，计算系统I/O demultiplexer的最大等待时间
         if (!base->event_count_active && !(flags & EVLOOP_NONBLOCK)) {
             //获取到base->timeheap最小堆中最先超时的计时器
             //如果没有计时器tv_p被赋值NULL，注意参数是timeval**
@@ -547,6 +570,8 @@ event_base_loop(struct event_base* base, int flags)
              * if we have active events, we just poll new events
              * without waiting.
              */
+            // 依然有未处理的就绪时间，就让I/O demultiplexer立即返回，不必等待
+            // 在libevent中，低优先级的就绪事件可能不能立即被处理
             evutil_timerclear(&tv); // 将阻塞超时时间清零
         }
 
@@ -556,7 +581,7 @@ event_base_loop(struct event_base* base, int flags)
             return (1);
         }
 
-        /* update last old time */
+        /* update last old time */ // 更新last wait time
         gettime(base, &base->event_tv);
 
         /* clear time cache */
@@ -564,6 +589,8 @@ event_base_loop(struct event_base* base, int flags)
         //调用OS的IO分发，tv_p表示超时的时间(如果不为NULL)
         //比如如果OS的I/O分发采用select，那么tv_p相当告诉select超时的时间，即正好是我们
         //添加到base->timeheap最先超时的event的时间(最小堆堆顶时间最靠前)
+        // 调用系统I/O demultiplexer等待就绪I/O events，可能是epoll_wait，或者select等；
+        // 在evsel->dispatch()中，会把就绪signal event、I/O event插入到激活链表中
         res = evsel->dispatch(base, evbase, tv_p);
 
         if (res == -1)
@@ -575,9 +602,14 @@ event_base_loop(struct event_base* base, int flags)
         //base->activequeues active队列
         timeout_process(base);
 
-        // active队列有事件统一进行处理回调
+        // 处理active队列中就绪的事件，进行回调
         if (base->event_count_active) {
+            // 调用event_process_active()处理激活链表中的就绪event，调用其回调函数执行事件处理
+           // 该函数会寻找最高优先级（priority值越小优先级越高）的激活事件链表，
+           // 然后处理链表中的所有就绪事件；
+             // 因此低优先级的就绪事件可能得不到及时处理；
             event_process_active(base);
+            //如果定义 EVLOOP_ONCE， 那么低优先级active的事件这次不会处理
             if (!base->event_count_active && (flags & EVLOOP_ONCE))
                 done = 1;
         } else if (flags & EVLOOP_NONBLOCK)
@@ -667,11 +699,11 @@ event_base_once(struct event_base* base, int fd, short events,
 }
 
 //设置并初始化event
-// fd  文件描述符，如果是计时器则忽略该参数
-// events  监听的事件，主要有EV_TI
-//         算符同时监听多个事件
-// callback 事件响应回调函数，参数fd
-// arg  传递给callback的自定义参数
+//ev：执行要初始化的event对象；
+//fd：该event绑定的“句柄”，对于信号事件，它就是关注的信号； 对于定时事件，设为-1即可
+//event：在该fd上关注的事件类型，它可以是EV_READ, EV_WRITE, EV_SIGNAL等
+//callback：这是一个函数指针，当fd上的事件event发生时，调用该函数执行处理，它有三个参数，调用时由event_base负责传入，按顺序，实际上就是event_set时的fd, event和arg；
+//arg：传递给callback函数指针的参数；
 void
 event_set(struct event* ev, int fd, short events,
           void (*callback)(int, short, void*), void* arg)
@@ -783,19 +815,23 @@ event_add(struct event* ev, const struct timeval* tv)
      * prepare for timeout insertion further below, if we get a
      * failure on any step, we should not change any state.
      */
-    //如果该事件有计时器选项(tv不为NULL)
-    //预先在二叉堆中预留一个空位给新添加的event
+    //新的timer事件，调用timer heap接口在堆上预留一个位置， 预先在二叉堆中预留一个空位给新添加的event
+    // 新的timer事件，调用timer heap接口在堆上预留一个位置
+    // 注：这样能保证该操作的原子性：
+    // 向系统I/O机制注册可能会失败，而当在堆上预留成功后，
+    // 定时事件的添加将肯定不会失败；
+    // 而预留位置的可能结果是堆扩充，但是内部元素并不会改变
     if (tv != NULL && !(ev->ev_flags & EVLIST_TIMEOUT)) {
         if (min_heap_reserve(&base->timeheap,
                              1 + min_heap_size(&base->timeheap)) == -1)
             return (-1);  /* ENOMEM == errno */
     }
 
-
+    // 如果事件ev不在已注册或者激活链表中，则调用evbase注册事件
     if ((ev->ev_events & (EV_READ | EV_WRITE | EV_SIGNAL)) && //如果监听有非超时event
-        !(ev->ev_flags & (EVLIST_INSERTED | EVLIST_ACTIVE))) { //且未插入到libevent
+        !(ev->ev_flags & (EVLIST_INSERTED | EVLIST_ACTIVE))) { //且未插入到libevent，事件ev不在已注册或者激活链表中
         res = evsel->add(evbase, ev);//添加到与OS相关的IO模型
-        if (res != -1)
+        if (res != -1)  // 注册成功，插入event到已注册链表中
             event_queue_insert(base, ev, EVLIST_INSERTED);// 插入event loop总的队列中
     }
 
@@ -803,6 +839,7 @@ event_add(struct event* ev, const struct timeval* tv)
      * we should change the timout state only if the previous event
      * addition succeeded.
      */
+    // 准备添加定时事件
     if (res != -1 && tv != NULL) {
         struct timeval now;
 
@@ -824,6 +861,7 @@ event_add(struct event* ev, const struct timeval* tv)
             /* See if we are just active executing this
              * event in a loop
              */
+            // 将ev_callback调用次数设置为0
             if (ev->ev_ncalls && ev->ev_pncalls) {
                 /* Abort loop */
                 *ev->ev_pncalls = 0;
@@ -832,7 +870,7 @@ event_add(struct event* ev, const struct timeval* tv)
             event_queue_remove(base, ev, EVLIST_ACTIVE);
         }
 
-        // 得到定时器触发时间点
+        /// 计算时间，并插入到timer小根堆中
         gettime(base, &now);
         evutil_timeradd(&now, tv, &ev->ev_timeout);
 
@@ -863,7 +901,7 @@ event_del(struct event* ev)
 
     base = ev->ev_base;
     evsel = base->evsel;
-    evbase = base->evbase;
+    evbase = base->evbase; //上下文
 
     assert(!(ev->ev_flags & ~EVLIST_ALL));
 
@@ -883,6 +921,8 @@ event_del(struct event* ev)
         event_queue_remove(base, ev, EVLIST_ACTIVE);
 
     if (ev->ev_flags & EVLIST_INSERTED) {
+         // EVLIST_INSERTED表明是I/O或者Signal事件，
+         // 需要调用I/O demultiplexer注销事件
         event_queue_remove(base, ev, EVLIST_INSERTED);
         return (evsel->del(evbase, ev));
     }
@@ -923,6 +963,7 @@ timeout_next(struct event_base* base, struct timeval** tv_p/*指针 的指针*/)
     // 没有计时器
     if ((ev = min_heap_top(&base->timeheap)) == NULL) {
         /* if no time-based events are active wait for I/O */
+        // 如果没有定时事件，将等待时间设置为NULL,表示一直阻塞直到有I/O事件发生
         *tv_p = NULL; // 变为NULL说明没有计时器
         return (0);
     }
@@ -930,13 +971,13 @@ timeout_next(struct event_base* base, struct timeval** tv_p/*指针 的指针*/)
     if (gettime(base, &now) == -1)
         return (-1);
 
-    // 已经有计时器达到触发时间
+    // 已经有计时器达到触发时间，  如果超时时间<=当前值，不能等待，需要立即返回
     if (evutil_timercmp(&ev->ev_timeout, &now, <= )) {
         evutil_timerclear(tv);
         return (0);
     }
 
-    // 得到距离触发的最小时间，返回到tv_p变量中
+    // 得到距离触发的最小时间，返回到tv_p变量中， 计算等待的时间=当前时间-最小的超时时间
     evutil_timersub(&ev->ev_timeout, &now, tv);
 
     assert(tv->tv_sec >= 0);
@@ -994,6 +1035,7 @@ timeout_correct(struct event_base* base, struct timeval* tv)
     base->event_tv = *tv;
 }
 
+// 检查heap中的timer events，将就绪的timer event从heap上删除，并插入到激活链表中
 void
 timeout_process(struct event_base* base)
 {
@@ -1057,6 +1099,7 @@ event_queue_remove(struct event_base* base, struct event* ev, int queue)
 void
 event_queue_insert(struct event_base* base, struct event* ev, int queue)
 {
+    // ev可能已经在激活列表中了，避免重复插入
     if (ev->ev_flags & queue) {
         /* Double insertion is possible for active events */
         if (queue & EVLIST_ACTIVE)
