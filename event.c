@@ -490,6 +490,7 @@ event_loopbreak(void)
     return (event_base_loopbreak(current_base));
 }
 
+//exit the next time  around the loop.
 int
 event_base_loopbreak(struct event_base* event_base)
 {
@@ -525,6 +526,7 @@ event_base_loop(struct event_base* base, int flags)
     if (base->sig.ev_signal_added)
         evsignal_base = base;
     done = 0;
+
     while (!done) { // 事件主循环
         /* Terminate the loop if we have been asked to */
         // 查看是否需要跳出循环，程序可以调用event_loopexit_cb()设置event_gotterm标记
@@ -614,7 +616,7 @@ event_base_loop(struct event_base* base, int flags)
                 done = 1;
         } else if (flags & EVLOOP_NONBLOCK)
             done = 1;
-    }
+    } //end while
 
     /* clear time cache */
     base->tv_cache.tv_sec = 0;
@@ -931,6 +933,7 @@ event_del(struct event* ev)
 }
 
 // 将event发到活动队列中
+// res 表示事件类型
 void
 event_active(struct event* ev, int res, short ncalls)
 {

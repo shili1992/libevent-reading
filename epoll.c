@@ -64,7 +64,7 @@ struct evepoll {
 //epoll相关的上下文
 struct epollop {
     // 对应的event管理，通过fds[sock_fd]得到与socket关联的evepoll
-    struct evepoll* fds;
+    struct evepoll* fds;  //记录每个fd 对应的event
     // fds的数量
     int nfds;
 
@@ -219,7 +219,7 @@ epoll_dispatch(struct event_base* base, void* arg, struct timeval* tv)
     }
 
     event_debug(("%s: epoll_wait reports %d", __func__, res));
-    // 处理socket读写
+    // 处理就绪事件读写
     for (i = 0; i < res; i++) {
         int what = events[i].events;
         struct event* evread = NULL, *evwrite = NULL;
@@ -227,7 +227,7 @@ epoll_dispatch(struct event_base* base, void* arg, struct timeval* tv)
 
         if (fd < 0 || fd >= epollop->nfds)
             continue;
-        evep = &epollop->fds[fd];
+        evep = &epollop->fds[fd];  //获得fd上对应的event
 
         if (what & (EPOLLHUP | EPOLLERR)) {
             evread = evep->evread;
@@ -245,6 +245,7 @@ epoll_dispatch(struct event_base* base, void* arg, struct timeval* tv)
         if (!(evread || evwrite))
             continue;
 
+        //加入到 active 队列中， 后面会进行回调
         if (evread != NULL)
             event_active(evread, EV_READ, 1);
         if (evwrite != NULL)

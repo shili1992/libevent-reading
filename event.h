@@ -261,7 +261,7 @@ struct event {
     void (*ev_callback)(int, short, void* arg);
     void* ev_arg;  //可以是任意类型的数据，在设置event时指定
     
-    // 在活动队列被回调的时候，该变量说明发生了什么事件，event result的简称
+    // 在活动队列被回调的时候，该变量说明发生了什么事件，event result的简称， 事件类型
     int ev_res;     /* result passed to event callback */
     //标志位，标志该event已经被插入哪几个链表中,为EVLIST_*的多种组合
     int ev_flags;
